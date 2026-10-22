@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Smartwatch & Web Chat Engine</title>
+  <style>
+    :root {
+      --bg: #090a0f;
+      --card-bg: rgba(255, 255, 255, 0.05);
+      --accent: #6c5ce7;
+      --accent-glow: rgba(108, 92, 231, 0.4);
+      --text: #e2e8f0;
+      --danger: #ff7675;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: var(--bg); color: var(--text); display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+
+    /* Ana Konteyner */
+    .app-wrapper {
+      width: 100%; max-width: 420px; height: 100vh; max-height: 850px;
+      background: rgba(18, 18, 26, 0.8); backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 24px;
+      display: flex; flex-direction: column; overflow: hidden;
+      box-shadow: 0 20px 50px rgba(0,0,0,0.5); position: relative;
+    }
+
+    /* Üst Bar */
+    .header {
+      padding: 16px; background: rgba(0,0,0,0.3); border-bottom: 1px solid rgba(255,255,255,0.05);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .header h2 { font-size: 1rem; font-weight: 600; letter-spacing: 0.5px; }
+    .admin-btn {
+      background: var(--card-bg); border: 1px solid rgba(255,255,255,0.2);
+      color: var(--text); padding: 6px 12px; border-radius: 12px; cursor: pointer;
+      font-size: 0.75rem; transition: all 0.3s ease;
+    }
+    .admin-btn:hover { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 10px var(--accent-glow); }
+
+    /* Mesajlaşma Alanı */
+    .chat-body { flex: 1; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+    .chat-body::-webkit-scrollbar { width: 4px; }
+    .chat-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+
+    .msg-bubble {
+      max-width: 80%; padding: 10px 14px; border-radius: 16px; font-size: 0.85rem;
+      line-height: 1.4; word-break: break-word; animation: popIn 0.3s ease-out forwards;
+      position: relative;
+    }
+    @keyframes popIn {
+      from { opacity: 0; transform: translateY(10px) scale(0.95); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    .msg-incoming { background: rgba(255,255,255,0.08); align-self: flex-start; border-bottom-left-radius: 4px; }
+    .msg-outgoing { background: var(--accent); color: #fff; align-self: flex-end; border-bottom-right-radius: 4px; box-shadow: 0 4px 12px var(--accent-glow); }
+
+    .msg-meta { font-size: 0.65rem; opacity: 0.6; margin-top: 4px; text-align: right; }
+    .msg-sender { font-size: 0.7rem; font-weight: bold; color: #a29bfe; margin-bottom: 2px; }
+
+    /* Mesaj Yazma Alanı */
+    .input-area { padding: 12px; background: rgba(0,0,0,0.4); display: flex; gap: 8px; }
+    .input-area input {
+      flex: 1; background: var(--card-bg); border: 1px solid rgba(255,255,255,0.1);
+      padding: 12px 16px; border-radius: 20px; color: var(--text); outline: none; font-size: 0.85rem;
+    }
+    .input-area button {
+      background: var(--accent); border: none; color: white; padding: 0 18px;
+      border-radius: 20px; font-weight: bold; cursor: pointer; transition: 0.2s;
+    }
+    .input-area button:active { transform: scale(0.95); }
+
+    /* Admin Modal */
+    .modal {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.85); backdrop-filter: blur(10px);
+      display: none; flex-direction: column; padding: 20px; z-index: 100;
+      animation: fadeIn 0.2s ease-in;
+    }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+    .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    .close-btn { background: none; border: none; color: var(--text); font-size: 1.2rem; cursor: pointer; }
+
+    .device-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; margin-bottom: 15px; }
+    .device-card {
+      background: var(--card-bg); padding: 10px 14px; border-radius: 12px;
+      display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem;
+    }
+    .ban-btn { background: var(--danger); border: none; color: white; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 0.7rem; }
+    
+    .admin-controls { display: flex; gap: 8px; }
+    .admin-controls button { flex: 1; padding: 10px; border-radius: 8px; border: none; cursor: pointer; font-weight: bold; font-size: 0.75rem; }
+
+    /* Ban Screen Overlay */
+    .ban-screen {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background: #111; color: var(--danger); display: none;
+      flex-direction: column; justify-content: center; align-items: center;
+      text-align: center; padding: 20px; z-index: 200;
+    }
+  </style>
+</head>
+<body>
+
+<div class="app-wrapper">
+  <div class="header">
+    <h2>⚡ Watch Live Chat</h2>
+    <button class="admin-btn" onclick="openAdminPrompt()">Admin</button>
+  </div>
+
+  <div class="chat-body" id="chatBody"></div>
+
+  <div class="input-area">
+    <input type="text" id="msgInput" placeholder="Mesaj yazın..." onkeypress="handleKeyPress(event)">
+    <button onclick="sendMessage()">Gönder</button>
+  </div>
+
+  <!-- Admin Paneli -->
+  <div class="modal" id="adminModal">
+    <div class="modal-header">
+      <h3>Yönetici Paneli</h3>
+      <button class="close-btn" onclick="closeAdminModal()">✕</button>
+    </div>
+    <div class="device-list" id="deviceList">
+      <!-- Cihazlar JS ile Yüklenecek -->
+    </div>
+    <div class="admin-controls">
+      <button style="background: #00b894; color: white;" onclick="downloadLogs('txt')">TXT Log İndir</button>
+      <button style="background: #0984e3; color: white;" onclick="downloadLogs('json')">JSON Log İndir</button>
+    </div>
+  </div>
+
+  <!-- Ban Ekranı -->
+  <div class="ban-screen" id="banScreen">
+    <h1>🚫 CİHAZ YASAKLANDI</h1>
+    <p style="color: #aaa; margin-top: 10px; font-size: 0.85rem;" id="banReason">Bu cihaza Donanım/Cihaz Banı uygulanmıştır.</p>
+  </div>
+</div>
+
+<script>
+  let deviceId = "";
+  let ws = null;
+  let adminPassword = "";
+
+  // 1. Donanım Fingerprint Üretimi (Cihazı benzersiz tanımak için)
+  function generateFingerprint() {
+    let fp = localStorage.getItem("dev_fp");
+    if (!fp) {
+      const raw = navigator.userAgent + navigator.hardwareConcurrency + screen.width + "x" + screen.height;
+      fp = 'DEV-' + btoa(raw).replace(/=/g, '').substring(0, 16);
+      localStorage.setItem("dev_fp", fp);
+    }
+    return fp;
+  }
+
+  // 2. Uygulama Başlatma & Giriş
+  async function initApp() {
+    deviceId = generateFingerprint();
+    
+    try {
+      const res = await fetch("/api/init", {
+        headers: { "X-Device-Fingerprint": deviceId }
+      });
+      const data = await res.json();
+
+      if (data.banned) {
+        showBanScreen(data.reason);
+        return;
+      }
+
+      // Geçmiş mesajları doldur
+      const chatBody = document.getElementById("chatBody");
+      chatBody.innerHTML = "";
+      data.history.forEach(appendMessage);
+
+      // WebSocket Başlat
+      connectWebSocket();
+
+    } catch (err) {
+      console.error("Başlatma hatası:", err);
+    }
+  }
+
+  // 3. WebSocket Bağlantısı
+  function connectWebSocket() {
+    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(`${protocol}//${location.host}/ws/chat/${deviceId}`);
+
+    ws.onmessage = (event) => {
+      const payload = JSON.parse(event.data);
+      if (payload.type === "NEW_MESSAGE") {
+        appendMessage(payload.data);
+      } else if (payload.type === "BANNED") {
+        showBanScreen(payload.reason);
+      }
+    };
+
+    ws.onclose = () => {
+      setTimeout(connectWebSocket, 3000); // Otomatik yeniden bağlanma
+    };
+  }
+
+  // 4. Mesaj Ekleme ve Arayüz
+  function appendMessage(msg) {
+    const chatBody = document.getElementById("chatBody");
+    const isOut = msg.deviceId === deviceId;
+    
+    const bubble = document.createElement("div");
+    bubble.className = `msg-bubble ${isOut ? 'msg-outgoing' : 'msg-incoming'}`;
+    
+    let content = "";
+    if (!isOut) {
+      content += `<div class="msg-sender">${msg.nickname}</div>`;
+    }
+    content += `<div>${escapeHtml(msg.text)}</div><div class="msg-meta">${msg.timestamp}</div>`;
+    
+    bubble.innerHTML = content;
+    chatBody.appendChild(bubble);
+    chatBody.scrollTop = chatBody.scrollHeight;
+  }
+
+  function sendMessage() {
+    const input = document.getElementById("msgInput");
+    const text = input.value.trim();
+    if (text && ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ text }));
+      input.value = "";
+    }
+  }
+
+  function handleKeyPress(e) {
+    if (e.key === "Enter") sendMessage();
+  }
+
+  // 5. Admin Panel İşlemleri
+  async function openAdminPrompt() {
+    const pwd = prompt("Admin Şifresini Girin:");
+    if (!pwd) return;
+
+    const res = await fetch("/api/admin/auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: pwd })
+    });
+
+    if (res.ok) {
+      adminPassword = pwd;
+      document.getElementById("adminModal").style.display = "flex";
+      loadAdminDevices();
+    } else {
+      alert("Hatalı Şifre!");
+    }
+  }
+
+  async function loadAdminDevices() {
+    const res = await fetch(`/api/admin/devices?auth=${adminPassword}`);
+    const data = await res.json();
+    const list = document.getElementById("deviceList");
+    list.innerHTML = "";
+
+    data.devices.forEach(dev => {
+      const card = document.createElement("div");
+      card.className = "device-card";
+      card.innerHTML = `
+        <div>
+          <strong>${dev.nickname}</strong> (${dev.ip})<br>
+          <small style="color:#aaa">${dev.deviceId}</small>
+        </div>
+        ${dev.isBanned ? 
+          '<span style="color:var(--danger)">BANLI</span>' : 
+          `<button class="ban-btn" onclick="banDevice('${dev.deviceId}')">BANLA</button>`
+        }
+      `;
+      list.appendChild(card);
+    });
+  }
+
+  async function banDevice(targetId) {
+    if (!confirm("Bu cihazı banlamak istediğinizden emin misiniz?")) return;
+
+    await fetch("/api/admin/ban", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: adminPassword, targetDeviceId: targetId })
+    });
+
+    loadAdminDevices();
+  }
+
+  function downloadLogs(type) {
+    window.open(`/api/admin/logs/${type}?password=${adminPassword}`, '_blank');
+  }
+
+  function closeAdminModal() {
+    document.getElementById("adminModal").style.display = "none";
+  }
+
+  function showBanScreen(reason) {
+    if (ws) ws.close();
+    document.getElementById("banReason").innerText = reason || "Erişiminiz engellendi.";
+    document.getElementById("banScreen").style.display = "flex";
+  }
+
+  function escapeHtml(text) {
+    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  // Başlat
+  window.onload = initApp;
+</script>
+</body>
+</html>
