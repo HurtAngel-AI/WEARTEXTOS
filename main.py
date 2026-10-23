@@ -1,22 +1,36 @@
+import os
 import uuid
+import asyncio
 from datetime import datetime
 from typing import Dict, List, Set
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse
+from google import genai
 
-app = FastAPI(title="Watch DM Engine")
+app = FastAPI(title="Watch DM & Gemini Engine")
+
+# ----------------------------------------------------
+# GEMINI CLIENT KURULUMU
+# ----------------------------------------------------
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+gemini_client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 
 # ----------------------------------------------------
 # IN-MEMORY DATABASE (RAM)
 # ----------------------------------------------------
 class InMemoryStore:
     def __init__(self):
-        # Mesajlar: [{id, sender, receiver, text, timestamp}]
         self.messages: List[Dict] = []
-        # Cihazlar: { device_id: { nickname: str, last_seen: str, ip: str } }
         self.devices: Dict[str, Dict] = {}
         self.banned_devices: Set[str] = set()
         self.system_logs: List[str] = []
+
+        # Bot için sabit Gemini hesabı
+        self.devices["DEV-GEMINI"] = {
+            "nickname": "🤖 Gemini AI",
+            "last_seen": "Her zaman aktif",
+            "ip": "SYSTEM"
+        }
 
     def log(self, message: str):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -52,17 +66,20 @@ HTML_CONTENT = """
     .msg { max-width: 80%; padding: 8px 12px; border-radius: 12px; font-size: 0.85rem; line-height: 1.3; }
     .msg.in { background: #252538; align-self: flex-start; }
     .msg.out { background: #6c5ce7; align-self: flex-end; }
-    .msg .time { font-size: 0.6rem; opacity: 0.5; text-align: right; margin-top: 3px; }
+    .msg.bot { background: #00b894; color: white; align-self: flex-start; border: 1px solid #55efc4; }
+    .msg .sender-name { font-size: 0.65rem; font-weight: bold; color: #a29bfe; margin-bottom: 2px; }
+    .msg.bot .sender-name { color: #ffeaa7; }
+    .msg .time { font-size: 0.6rem; opacity: 0.6; text-align: right; margin-top: 3px; }
     
     .input-box { padding: 10px; background: #000; display: flex; gap: 8px; }
     .input-box input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #333; background: #111; color: white; outline: none; }
     .input-box button { padding: 10px 16px; border-radius: 8px; border: none; background: #6c5ce7; color: white; font-weight: bold; cursor: pointer; }
     
-    .ban-overlay { position: absolute; inset: 0; background: #000; color: #ff7675; display: none; flex-direction: column; justify-content: center; align-items: center; text-align: center; p: 20px; z-index: 99; }
+    .ban-overlay { position: absolute; inset: 0; background: #000; color: #ff7675; display: none; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 20px; z-index: 99; }
     
     .admin-modal { position: absolute; inset: 0; background: rgba(0,0,0,0.95); display: none; flex-direction: column; padding: 15px; z-index: 50; }
-    .admin-modal h4 { margin-bottom: 10px; }
-    .dev-item { display: flex; justify-content: space-between; padding: 8px; background: #222; margin-bottom: 5px; border-radius: 6px; font-size: 0.75rem; }
+    .dev-item { display: flex; justify-content: space-between; align-items: center; padding: 8px; background: #222; margin-bottom: 5px; border-radius: 6px; font-size: 0.75rem; }
+    .dev-btn { padding: 3px 8px; border-radius: 4px; border: none; color: white; cursor: pointer; font-size: 0.7rem; }
   </style>
 </head>
 <body>
@@ -73,29 +90,24 @@ HTML_CONTENT = """
     <button style="background:#333; color:white; border:none; padding:4px 8px; border-radius:6px; cursor:pointer;" onclick="openAdmin()">Admin</button>
   </div>
 
-  <!-- DM Kişi Seçme Alanı -->
   <div class="user-bar" id="userBar">
     <div class="user-chip active" onclick="selectUser('GLOBAL')">🌐 Genel</div>
   </div>
 
-  <!-- Mesaj Alanı -->
   <div class="chat-area" id="chatArea"></div>
 
-  <!-- Yazma Kutusu -->
-  <div class="input-box">
-    <input type="text" id="msgInput" placeholder="Mesaj yaz..." onkeypress="if(event.key==='Enter') sendMsg()">
+  <div class="input-area input-box">
+    <input type="text" id="msgInput" placeholder="@gemini sor veya mesaj yaz..." onkeypress="if(event.key==='Enter') sendMsg()">
     <button onclick="sendMsg()">Gönder</button>
   </div>
 
-  <!-- Ban Ekranı -->
   <div class="ban-overlay" id="banOverlay">
     <h2>🚫 BANLANDINIZ</h2>
     <p style="margin-top:10px; color:#aaa;">Cihazınız yönetici tarafından engellendi.</p>
   </div>
 
-  <!-- Admin Modalı -->
   <div class="admin-modal" id="adminModal">
-    <div style="display:flex; justify-size:space-between; justify-content:space-between; align-items:center; margin-bottom:10px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
       <h4>Admin Paneli</h4>
       <button onclick="document.getElementById('adminModal').style.display='none'" style="background:none; color:white; border:none; cursor:pointer;">✕</button>
     </div>
@@ -111,7 +123,7 @@ HTML_CONTENT = """
   let myDevId = localStorage.getItem("dev_id") || "DEV-" + Math.random().toString(36).substring(2, 9);
   localStorage.setItem("dev_id", myDevId);
 
-  let activeTarget = "GLOBAL"; // Standart Genel Sohbet
+  let activeTarget = "GLOBAL";
   let adminPass = "";
 
   async function apiCall(url, method="GET", body=null) {
@@ -126,24 +138,24 @@ HTML_CONTENT = """
     return res.json();
   }
 
-  // 1. Sayfa Açılışı ve Döngü
   async function init() {
     try {
       const data = await apiCall("/api/init");
       document.getElementById("myTitle").innerText = "Ben: " + data.nickname;
-      
-      // Her 1.5 saniyede bir verileri çek (Garanti Çalışan Polling)
       setInterval(fetchData, 1500);
       fetchData();
     } catch(e) {}
   }
 
-  // 2. Mesajları ve Kullanıcıları Çek
   async function fetchData() {
     try {
       const data = await apiCall("/api/sync?target=" + activeTarget);
       
-      // Kullanıcı Listesini Güncelle
+      // Kendi ismimiz güncellendiyse başlığı güncelle
+      if(data.myNickname) {
+        document.getElementById("myTitle").innerText = "Ben: " + data.myNickname;
+      }
+
       const uBar = document.getElementById("userBar");
       let html = `<div class="user-chip ${activeTarget==='GLOBAL'?'active':''}" onclick="selectUser('GLOBAL')">🌐 Genel</div>`;
       
@@ -154,14 +166,17 @@ HTML_CONTENT = """
       });
       uBar.innerHTML = html;
 
-      // Mesajları Bas
       const cArea = document.getElementById("chatArea");
       cArea.innerHTML = "";
       data.messages.forEach(m => {
         const isMe = m.sender === myDevId;
+        const isBot = m.sender === "DEV-GEMINI";
+        
         const div = document.createElement("div");
-        div.className = `msg ${isMe ? 'out' : 'in'}`;
-        div.innerHTML = `<div>${escapeHtml(m.text)}</div><div class="time">${m.timestamp}</div>`;
+        div.className = `msg ${isBot ? 'bot' : (isMe ? 'out' : 'in')}`;
+        
+        let senderHeader = !isMe ? `<div class="sender-name">${escapeHtml(m.senderName)}</div>` : '';
+        div.innerHTML = `${senderHeader}<div>${escapeHtml(m.text)}</div><div class="time">${m.timestamp}</div>`;
         cArea.appendChild(div);
       });
       cArea.scrollTop = cArea.scrollHeight;
@@ -174,7 +189,6 @@ HTML_CONTENT = """
     fetchData();
   }
 
-  // 3. Mesaj Gönder
   async function sendMsg() {
     const inp = document.getElementById("msgInput");
     const txt = inp.value.trim();
@@ -185,27 +199,44 @@ HTML_CONTENT = """
     fetchData();
   }
 
-  // 4. Admin İşlemleri
   async function openAdmin() {
     const pwd = prompt("Admin Şifresi:");
     if(!pwd) return;
-    
+    adminPass = pwd;
+    loadAdminData();
+  }
+
+  async function loadAdminData() {
     try {
-      const data = await fetch(`/api/admin/devices?auth=${pwd}`).then(r => r.json());
-      adminPass = pwd;
+      const data = await fetch(`/api/admin/devices?auth=${adminPass}`).then(r => r.json());
       document.getElementById("adminModal").style.display = "flex";
       
       const list = document.getElementById("adminDevList");
       list.innerHTML = "";
       data.devices.forEach(d => {
+        if(d.id === "DEV-GEMINI") return;
         list.innerHTML += `
           <div class="dev-item">
-            <div><b>${d.nickname}</b> (${d.ip})</div>
-            ${d.banned ? '<span style="color:red">BANLI</span>' : `<button onclick="ban('${d.id}')" style="background:red; color:white; border:none; padding:2px 6px; border-radius:4px; cursor:pointer;">BANLA</button>`}
+            <div><b>${escapeHtml(d.nickname)}</b><br><small style="color:#aaa">${d.id}</small></div>
+            <div style="display:flex; gap:4px;">
+              <button class="dev-btn" style="background:#0984e3;" onclick="setNick('${d.id}')">İsim Değiş</button>
+              ${d.banned ? '<span style="color:red">BANLI</span>' : `<button class="dev-btn" style="background:red;" onclick="ban('${d.id}')">BANLA</button>`}
+            </div>
           </div>
         `;
       });
     } catch(e) { alert("Hatalı Şifre!"); }
+  }
+
+  async function setNick(id) {
+    const newNick = prompt("Yeni Kullanıcı Adı:");
+    if(!newNick) return;
+    await fetch("/api/admin/set-nickname", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ password: adminPass, targetId: id, nickname: newNick })
+    });
+    loadAdminData();
   }
 
   async function ban(id) {
@@ -214,20 +245,53 @@ HTML_CONTENT = """
       headers: {"Content-Type":"application/json"},
       body: JSON.stringify({ password: adminPass, targetId: id })
     });
-    openAdmin();
+    loadAdminData();
   }
 
   function downloadLog(type) {
     window.open(`/api/admin/logs/${type}?password=${adminPass}`, '_blank');
   }
 
-  function escapeHtml(t) { return t.replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function escapeHtml(t) { return (t||'').replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
   window.onload = init;
 </script>
 </body>
 </html>
 """
+
+# ----------------------------------------------------
+# HELPER: GEMINI YANIT ÜRETİCİSİ
+# ----------------------------------------------------
+async def process_gemini_reply(user_prompt: str, target_room: str):
+    """Arka planda Gemini'den cevap alıp ilgili odaya yazar."""
+    if not gemini_client:
+        reply_text = "⚠️ Gemini API Key henüz ayarlanmamış (GEMINI_API_KEY eksik)."
+    else:
+        try:
+            # Komut alanını temizle
+            clean_prompt = user_prompt.replace("@gemini", "").strip()
+            if not clean_prompt:
+                clean_prompt = "Merhaba"
+            
+            response = gemini_client.models.generate_content(
+                model="gemini-3.5-flash-lite",
+                contents=clean_prompt,
+            )
+            reply_text = response.text
+        except Exception as e:
+            reply_text = f"⚠️ Gemini Hatanın Detayı: {str(e)}"
+
+    # Bot cevabını sohbet havuzuna ekle
+    msg = {
+        "id": str(uuid.uuid4()),
+        "sender": "DEV-GEMINI",
+        "receiver": target_room,
+        "text": reply_text,
+        "timestamp": datetime.now().strftime("%H:%M:%S")
+    }
+    db.messages.append(msg)
+    db.log(f"GEMINI BOT RESPONDED [{target_room}]: {reply_text[:50]}...")
 
 # ----------------------------------------------------
 # API ENDPOINTS
@@ -261,24 +325,32 @@ async def sync_data(request: Request, target: str = "GLOBAL"):
     if dev_id in db.banned_devices:
         raise HTTPException(status_code=403, detail="Banned")
 
-    # Son görülmeyi güncelle
     if dev_id in db.devices:
         db.devices[dev_id]["last_seen"] = datetime.now().strftime("%H:%M:%S")
 
-    # Aktif Kullanıcı Listesi
+    # Kullanıcı Listesi
     users = [{"id": k, "nickname": v["nickname"]} for k, v in db.devices.items()]
 
-    # Mesajları Filtrele (GLOBAL ya da Özel DM)
+    # Mesajları Filtrele & Gönderen İsmini Ekle
     filtered_msgs = []
     for m in db.messages:
+        show = False
         if target == "GLOBAL" and m["receiver"] == "GLOBAL":
-            filtered_msgs.append(m)
+            show = True
         elif target != "GLOBAL":
-            # Birebir DM Filtresi: Gönderen/Alıcı eşleşmesi
-            if (m["sender"] == dev_id and m["receiver"] == target) or (m["sender"] == target and m["receiver"] == dev_id):
-                filtered_msgs.append(m)
+            if (m["sender"] == dev_id and m["receiver"] == target) or \
+               (m["sender"] == target and m["receiver"] == dev_id) or \
+               (m["sender"] == "DEV-GEMINI" and m["receiver"] == target):
+                show = True
 
-    return {"users": users, "messages": filtered_msgs}
+        if show:
+            msg_copy = dict(m)
+            sender_info = db.devices.get(m["sender"], {})
+            msg_copy["senderName"] = sender_info.get("nickname", "Bilinmeyen")
+            filtered_msgs.append(msg_copy)
+
+    my_nick = db.devices.get(dev_id, {}).get("nickname", "")
+    return {"users": users, "messages": filtered_msgs, "myNickname": my_nick}
 
 @app.post("/api/send")
 async def send_message(request: Request, payload: dict):
@@ -300,6 +372,11 @@ async def send_message(request: Request, payload: dict):
         db.messages.append(msg)
         db.log(f"MESAJ [{dev_id} -> {target}]: {text}")
 
+        # @gemini Komutu Kontrolü
+        if "@gemini" in text.lower():
+            # Yanıtı kilitlenmeden asenkron arka planda üret
+            asyncio.create_task(process_gemini_reply(text, target))
+
     return {"status": "ok"}
 
 # ----------------------------------------------------
@@ -320,6 +397,21 @@ async def get_admin_devices(auth: str):
             "banned": k in db.banned_devices
         })
     return {"devices": devs}
+
+@app.post("/api/admin/set-nickname")
+async def set_nickname(payload: dict):
+    if payload.get("password") != "456456456":
+        raise HTTPException(status_code=403, detail="Yetkisiz")
+    
+    target_id = payload.get("targetId")
+    new_nick = payload.get("nickname", "").strip()
+
+    if target_id in db.devices and new_nick:
+        old_nick = db.devices[target_id]["nickname"]
+        db.devices[target_id]["nickname"] = new_nick
+        db.log(f"ADMIN RENAMED: {target_id} ({old_nick} -> {new_nick})")
+        return {"status": "ok"}
+    return {"status": "error"}
 
 @app.post("/api/admin/ban")
 async def ban_device(payload: dict):
