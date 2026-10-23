@@ -5,15 +5,15 @@ from datetime import datetime
 from typing import Dict, List, Set
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse
-from google import genai
+import httpx
 
-app = FastAPI(title="Watch DM & Gemini Engine")
+app = FastAPI(title="Watch DM & Kedy AI Engine")
 
 # ----------------------------------------------------
-# GEMINI CLIENT KURULUMU
+# KEDY API AYARLARI
 # ----------------------------------------------------
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-gemini_client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
+KEDY_API_KEY = os.getenv("KEDY_API_KEY", "kdy_live_rhUU9Ps2VNsT0gLxLFF9pT5yStC0WxAnazGWN75xMlk")
+KEDY_API_URL = "https://api.kedy.ai/v1/chat/completions"  # Kedy AI Chat Endpoint
 
 # ----------------------------------------------------
 # IN-MEMORY DATABASE (RAM)
@@ -25,9 +25,9 @@ class InMemoryStore:
         self.banned_devices: Set[str] = set()
         self.system_logs: List[str] = []
 
-        # Bot için sabit Gemini hesabı
-        self.devices["DEV-GEMINI"] = {
-            "nickname": "🤖 Gemini AI",
+        # Bot için Kedy AI hesabı
+        self.devices["DEV-KEDY"] = {
+            "nickname": "🐱 Kedy AI",
             "last_seen": "Her zaman aktif",
             "ip": "SYSTEM"
         }
@@ -66,7 +66,7 @@ HTML_CONTENT = """
     .msg { max-width: 80%; padding: 8px 12px; border-radius: 12px; font-size: 0.85rem; line-height: 1.3; }
     .msg.in { background: #252538; align-self: flex-start; }
     .msg.out { background: #6c5ce7; align-self: flex-end; }
-    .msg.bot { background: #00b894; color: white; align-self: flex-start; border: 1px solid #55efc4; }
+    .msg.bot { background: #e17055; color: white; align-self: flex-start; border: 1px solid #fab1a0; }
     .msg .sender-name { font-size: 0.65rem; font-weight: bold; color: #a29bfe; margin-bottom: 2px; }
     .msg.bot .sender-name { color: #ffeaa7; }
     .msg .time { font-size: 0.6rem; opacity: 0.6; text-align: right; margin-top: 3px; }
@@ -97,7 +97,7 @@ HTML_CONTENT = """
   <div class="chat-area" id="chatArea"></div>
 
   <div class="input-area input-box">
-    <input type="text" id="msgInput" placeholder="@gemini sor veya mesaj yaz..." onkeypress="if(event.key==='Enter') sendMsg()">
+    <input type="text" id="msgInput" placeholder="@kedy mesaj yaz..." onkeypress="if(event.key==='Enter') sendMsg()">
     <button onclick="sendMsg()">Gönder</button>
   </div>
 
@@ -151,7 +151,6 @@ HTML_CONTENT = """
     try {
       const data = await apiCall("/api/sync?target=" + activeTarget);
       
-      // Kendi ismimiz güncellendiyse başlığı güncelle
       if(data.myNickname) {
         document.getElementById("myTitle").innerText = "Ben: " + data.myNickname;
       }
@@ -170,7 +169,7 @@ HTML_CONTENT = """
       cArea.innerHTML = "";
       data.messages.forEach(m => {
         const isMe = m.sender === myDevId;
-        const isBot = m.sender === "DEV-GEMINI";
+        const isBot = m.sender === "DEV-KEDY";
         
         const div = document.createElement("div");
         div.className = `msg ${isBot ? 'bot' : (isMe ? 'out' : 'in')}`;
@@ -214,7 +213,7 @@ HTML_CONTENT = """
       const list = document.getElementById("adminDevList");
       list.innerHTML = "";
       data.devices.forEach(d => {
-        if(d.id === "DEV-GEMINI") return;
+        if(d.id === "DEV-KEDY") return;
         list.innerHTML += `
           <div class="dev-item">
             <div><b>${escapeHtml(d.nickname)}</b><br><small style="color:#aaa">${d.id}</small></div>
@@ -261,37 +260,47 @@ HTML_CONTENT = """
 """
 
 # ----------------------------------------------------
-# HELPER: GEMINI YANIT ÜRETİCİSİ
+# HELPER: KEDY AI YANIT ÜRETİCİSİ
 # ----------------------------------------------------
-async def process_gemini_reply(user_prompt: str, target_room: str):
-    """Arka planda Gemini'den cevap alıp ilgili odaya yazar."""
-    if not gemini_client:
-        reply_text = "⚠️ Gemini API Key henüz ayarlanmamış (GEMINI_API_KEY eksik)."
-    else:
-        try:
-            # Komut alanını temizle
-            clean_prompt = user_prompt.replace("@gemini", "").strip()
-            if not clean_prompt:
-                clean_prompt = "Merhaba"
-            
-            response = gemini_client.models.generate_content(
-                model="gemini-3.5-flash-lite",
-                contents=clean_prompt,
-            )
-            reply_text = response.text
-        except Exception as e:
-            reply_text = f"⚠️ Gemini Hatanın Detayı: {str(e)}"
+async def process_kedy_reply(user_prompt: str, target_room: str):
+    """Kedy API'ye istek atar ve yanıtı odaya basar."""
+    clean_prompt = user_prompt.replace("@kedy", "").replace("@gemini", "").strip() or "Merhaba"
+    
+    headers = {
+        "Authorization": f"Bearer {KEDY_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": "kedy-chat",
+        "messages": [
+            {"role": "system", "content": "Sen mesajlaşma uygulamasındaki yardımcı yapay zeka asistanısın."},
+            {"role": "user", "content": clean_prompt}
+        ]
+    }
 
-    # Bot cevabını sohbet havuzuna ekle
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(KEDY_API_URL, json=payload, headers=headers)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                reply_text = data["choices"][0]["message"]["content"]
+            else:
+                reply_text = f"⚠️ Kedy API Hatası: [{resp.status_code}] {resp.text}"
+
+    except Exception as e:
+        reply_text = f"⚠️ Bağlantı Hatası: {str(e)}"
+
     msg = {
         "id": str(uuid.uuid4()),
-        "sender": "DEV-GEMINI",
+        "sender": "DEV-KEDY",
         "receiver": target_room,
         "text": reply_text,
         "timestamp": datetime.now().strftime("%H:%M:%S")
     }
     db.messages.append(msg)
-    db.log(f"GEMINI BOT RESPONDED [{target_room}]: {reply_text[:50]}...")
+    db.log(f"KEDY AI RESPONDED [{target_room}]: {reply_text[:50]}...")
 
 # ----------------------------------------------------
 # API ENDPOINTS
@@ -328,10 +337,8 @@ async def sync_data(request: Request, target: str = "GLOBAL"):
     if dev_id in db.devices:
         db.devices[dev_id]["last_seen"] = datetime.now().strftime("%H:%M:%S")
 
-    # Kullanıcı Listesi
     users = [{"id": k, "nickname": v["nickname"]} for k, v in db.devices.items()]
 
-    # Mesajları Filtrele & Gönderen İsmini Ekle
     filtered_msgs = []
     for m in db.messages:
         show = False
@@ -340,7 +347,7 @@ async def sync_data(request: Request, target: str = "GLOBAL"):
         elif target != "GLOBAL":
             if (m["sender"] == dev_id and m["receiver"] == target) or \
                (m["sender"] == target and m["receiver"] == dev_id) or \
-               (m["sender"] == "DEV-GEMINI" and m["receiver"] == target):
+               (m["sender"] == "DEV-KEDY" and m["receiver"] == target):
                 show = True
 
         if show:
@@ -372,10 +379,10 @@ async def send_message(request: Request, payload: dict):
         db.messages.append(msg)
         db.log(f"MESAJ [{dev_id} -> {target}]: {text}")
 
-        # @gemini Komutu Kontrolü
-        if "@gemini" in text.lower():
-            # Yanıtı kilitlenmeden asenkron arka planda üret
-            asyncio.create_task(process_gemini_reply(text, target))
+        # @kedy veya @gemini yazıldığında Kedy AI devreye girer
+        lower_text = text.lower()
+        if "@kedy" in lower_text or "@gemini" in lower_text:
+            asyncio.create_task(process_kedy_reply(text, target))
 
     return {"status": "ok"}
 
